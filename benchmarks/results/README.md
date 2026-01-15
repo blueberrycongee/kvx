@@ -5,7 +5,7 @@ KVX write kernel under the same shapes in WSL. It is a kernel-level write
 benchmark, not an end-to-end inference comparison.
 
 ## Environment
-- See `benchmarks/results/fair_bench_wsl_env.txt` for GPU/driver/CUDA/WSL.
+- See `benchmarks/results/fair_bench_wsl_env.json` for GPU/driver/CUDA/WSL.
 - Benchmark defaults: `warmup=10`, `iters=50`, `repeats=10`.
 
 ## Summary (ratio = KVX / vLLM)

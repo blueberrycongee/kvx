@@ -32,19 +32,8 @@ nvcc -std=c++17 -O3 -arch=sm_80 \
 ## Capture environment
 ```bash
 mkdir -p benchmarks/results
-{
-  nvidia-smi -L
-  nvidia-smi
-  nvcc --version
-  python - <<'PY'
-import torch
-import vllm
-print("torch_version=", torch.__version__)
-print("torch_cuda=", torch.version.cuda)
-print("device=", torch.cuda.get_device_name(0))
-print("vllm_version=", getattr(vllm, "__version__", "unknown"))
-PY
-} | tee benchmarks/results/fair_bench_a100_env.txt
+python benchmarks/capture_env.py \
+  --output benchmarks/results/fair_bench_a100_env.json
 ```
 
 ## Run fair benchmark (KVX vs vLLM)

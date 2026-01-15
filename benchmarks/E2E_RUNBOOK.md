@@ -66,18 +66,8 @@ python benchmarks/e2e_bench.py \
 ## Capture environment
 ```bash
 mkdir -p benchmarks/results
-{
-  nvidia-smi -L
-  nvidia-smi
-  python - <<'PY'
-import torch
-import vllm
-print("torch_version=", torch.__version__)
-print("torch_cuda=", torch.version.cuda)
-print("device=", torch.cuda.get_device_name(0))
-print("vllm_version=", getattr(vllm, "__version__", "unknown"))
-PY
-} | tee benchmarks/results/e2e_env.txt
+python benchmarks/capture_env.py \
+  --output benchmarks/results/e2e_env.json
 ```
 
 ## Notes
