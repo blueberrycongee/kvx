@@ -22,10 +22,25 @@ def assert_slot_mapping(seq_count, seq_len, block_size, tokens_per_seq):
     assert (slots >= 0).all().item(), "slot mapping contains negative slots"
 
 
+def assert_slot_mapping_raises(seq_count, seq_len, block_size, tokens_per_seq):
+    try:
+        build_kvx_like_slot_mapping(
+            seq_count, seq_len, block_size, tokens_per_seq, device="cpu"
+        )
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for invalid tokens_per_seq")
+
+
 def main():
     assert_slot_mapping(seq_count=2, seq_len=8, block_size=4, tokens_per_seq=1)
     assert_slot_mapping(seq_count=2, seq_len=8, block_size=4, tokens_per_seq=2)
     assert_slot_mapping(seq_count=4, seq_len=16, block_size=8, tokens_per_seq=4)
+    assert_slot_mapping(seq_count=1, seq_len=8, block_size=16, tokens_per_seq=1)
+    assert_slot_mapping(seq_count=2, seq_len=8, block_size=4, tokens_per_seq=8)
+    assert_slot_mapping_raises(
+        seq_count=2, seq_len=8, block_size=4, tokens_per_seq=9
+    )
     print("fair_bench_slot_mapping_test passed")
 
 
