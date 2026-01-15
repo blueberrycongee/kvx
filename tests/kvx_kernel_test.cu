@@ -117,38 +117,23 @@ static void set_tensor_desc_seq(kvx_tensor_desc_t *tensor, uint32_t seq_count,
 template <typename T>
 static kvx_status_t launch_write(const kvx_cache_desc_t *cache,
                                  const kvx_write_desc_t *write) {
-  if constexpr (DTypeTraits<T>::dtype == KVX_DTYPE_F32) {
-    return kvx_launch_write_kv_f32(cache, write, NULL);
-  } else if constexpr (DTypeTraits<T>::dtype == KVX_DTYPE_F16) {
-    return kvx_launch_write_kv_f16(cache, write, NULL);
-  } else {
-    return kvx_launch_write_kv_bf16(cache, write, NULL);
-  }
+  (void)sizeof(T);
+  return kvx_launch_write_kv(cache, write, NULL);
 }
 
 template <typename T>
 static kvx_status_t launch_write_prefill(const kvx_cache_desc_t *cache,
                                          const kvx_write_desc_t *write,
                                          int32_t tokens_per_seq) {
-  if constexpr (DTypeTraits<T>::dtype == KVX_DTYPE_F32) {
-    return kvx_launch_write_kv_prefill_f32(cache, write, tokens_per_seq, NULL);
-  } else if constexpr (DTypeTraits<T>::dtype == KVX_DTYPE_F16) {
-    return kvx_launch_write_kv_prefill_f16(cache, write, tokens_per_seq, NULL);
-  } else {
-    return kvx_launch_write_kv_prefill_bf16(cache, write, tokens_per_seq, NULL);
-  }
+  (void)sizeof(T);
+  return kvx_launch_write_kv_prefill(cache, write, tokens_per_seq, NULL);
 }
 
 template <typename T>
 static kvx_status_t launch_gather(const kvx_cache_desc_t *cache,
                                   const kvx_gather_desc_t *gather) {
-  if constexpr (DTypeTraits<T>::dtype == KVX_DTYPE_F32) {
-    return kvx_launch_gather_kv_f32(cache, gather, NULL);
-  } else if constexpr (DTypeTraits<T>::dtype == KVX_DTYPE_F16) {
-    return kvx_launch_gather_kv_f16(cache, gather, NULL);
-  } else {
-    return kvx_launch_gather_kv_bf16(cache, gather, NULL);
-  }
+  (void)sizeof(T);
+  return kvx_launch_gather_kv(cache, gather, NULL);
 }
 
 template <typename T>
@@ -275,10 +260,22 @@ static bool run_write_test_case(int32_t num_heads, int32_t head_dim,
         float actual_v = DTypeTraits<T>::to_float(h_value_cache[offset]);
         if (!nearly_equal(actual_k, expected_k, tol) ||
             !nearly_equal(actual_v, expected_v, tol)) {
+          fprintf(stderr,
+                  "prefill mismatch: heads=%d head_dim=%d tokens_per_seq=%d "
+                  "token=%d head=%d dim=%d expected_k=%f actual_k=%f "
+                  "expected_v=%f actual_v=%f\n",
+                  num_heads, head_dim, tokens_per_seq, token, head, dim,
+                  expected_k, actual_k, expected_v, actual_v);
           ok = false;
           break;
         }
       }
+      if (!ok) {
+        break;
+      }
+    }
+    if (!ok) {
+      break;
     }
   }
 
@@ -442,7 +439,12 @@ template <typename T>
 static bool run_write_prefill_invalid() {
   kvx_cache_desc_t cache = {0};
   kvx_write_desc_t write = {0};
+  cache.k.dtype = DTypeTraits<T>::dtype;
+  cache.v.dtype = DTypeTraits<T>::dtype;
   kvx_status_t st = launch_write_prefill<T>(&cache, &write, 0);
+  if (st != KVX_STATUS_INVALID_ARGUMENT) {
+    fprintf(stderr, "prefill invalid args expected=INVALID got=%d\n", st);
+  }
   return st == KVX_STATUS_INVALID_ARGUMENT;
 }
 
@@ -616,17 +618,22 @@ static bool run_gather_test() {
 
 int main() {
   bool ok = true;
-  ok &= run_write_test<float>();
-  ok &= run_write_test<__half>();
-  ok &= run_write_test<__nv_bfloat16>();
+  auto record = [&](const char *name, bool result) {
+    fprintf(stderr, "%s: %s\n", name, result ? "ok" : "fail");
+    ok &= result;
+  };
 
-  ok &= run_write_prefill_test<float>();
-  ok &= run_write_prefill_test<__half>();
-  ok &= run_write_prefill_test<__nv_bfloat16>();
+  record("write_f32", run_write_test<float>());
+  record("write_f16", run_write_test<__half>());
+  record("write_bf16", run_write_test<__nv_bfloat16>());
 
-  ok &= run_gather_test<float>();
-  ok &= run_gather_test<__half>();
-  ok &= run_gather_test<__nv_bfloat16>();
+  record("prefill_f32", run_write_prefill_test<float>());
+  record("prefill_f16", run_write_prefill_test<__half>());
+  record("prefill_bf16", run_write_prefill_test<__nv_bfloat16>());
+
+  record("gather_f32", run_gather_test<float>());
+  record("gather_f16", run_gather_test<__half>());
+  record("gather_bf16", run_gather_test<__nv_bfloat16>());
 
   if (!ok) {
     fprintf(stderr, "kvx_kernel_test failed\n");

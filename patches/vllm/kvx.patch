@@ -1,4 +1,4 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
+﻿diff --git a/CMakeLists.txt b/CMakeLists.txt
 index ec67ee8c3..472e550d0 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
@@ -84,7 +84,7 @@ index d14f46c34..7110e8369 100644
                            torch::Tensor& kv_cache, torch::Tensor& slot_mapping,
                            const std::string& kv_cache_dtype,
 diff --git a/csrc/cache_kernels.cu b/csrc/cache_kernels.cu
-index a02fcb617..1af03f006 100644
+index a02fcb617..dc94a1bcb 100644
 --- a/csrc/cache_kernels.cu
 +++ b/csrc/cache_kernels.cu
 @@ -9,6 +9,10 @@
@@ -98,7 +98,7 @@ index a02fcb617..1af03f006 100644
  #ifdef USE_ROCM
    #include "quantization/w8a8/fp8/amd/quant_utils.cuh"
  #else
-@@ -650,6 +654,192 @@ void reshape_and_cache_flash(
+@@ -650,6 +654,178 @@ void reshape_and_cache_flash(
                               CALL_RESHAPE_AND_CACHE_FLASH);
  }
  
@@ -266,21 +266,7 @@ index a02fcb617..1af03f006 100644
 +
 +  auto cuda_stream = at::cuda::getCurrentCUDAStream();
 +  void* stream = reinterpret_cast<void*>(cuda_stream.stream());
-+  kvx_status_t status = KVX_STATUS_INVALID_ARGUMENT;
-+  switch (key.scalar_type()) {
-+    case at::ScalarType::Half:
-+      status = kvx_launch_write_kv_f16(&cache, &write, stream);
-+      break;
-+    case at::ScalarType::BFloat16:
-+      status = kvx_launch_write_kv_bf16(&cache, &write, stream);
-+      break;
-+    case at::ScalarType::Float:
-+      status = kvx_launch_write_kv_f32(&cache, &write, stream);
-+      break;
-+    default:
-+      status = KVX_STATUS_UNSUPPORTED;
-+      break;
-+  }
++  kvx_status_t status = kvx_launch_write_kv(&cache, &write, stream);
 +  TORCH_CHECK(status == KVX_STATUS_OK,
 +              "kvx cache write failed with status=", static_cast<int>(status));
 +#else

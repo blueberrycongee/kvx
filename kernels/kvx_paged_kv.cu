@@ -469,6 +469,27 @@ KVX_API kvx_status_t kvx_launch_write_kv_bf16(const kvx_cache_desc_t *cache,
                                               KVX_DTYPE_BF16);
 }
 
+KVX_API kvx_status_t kvx_launch_write_kv(const kvx_cache_desc_t *cache,
+                                         const kvx_write_desc_t *write,
+                                         void *stream) {
+  if (cache == NULL || write == NULL) {
+    return KVX_STATUS_INVALID_ARGUMENT;
+  }
+  if (cache->k.dtype != cache->v.dtype) {
+    return KVX_STATUS_INVALID_ARGUMENT;
+  }
+  switch (cache->k.dtype) {
+    case KVX_DTYPE_F16:
+      return kvx_launch_write_kv_f16(cache, write, stream);
+    case KVX_DTYPE_BF16:
+      return kvx_launch_write_kv_bf16(cache, write, stream);
+    case KVX_DTYPE_F32:
+      return kvx_launch_write_kv_f32(cache, write, stream);
+    default:
+      return KVX_STATUS_UNSUPPORTED;
+  }
+}
+
 template <typename T>
 static kvx_status_t kvx_launch_write_kv_prefill_t(
     const kvx_cache_desc_t *cache, const kvx_write_desc_t *write,
@@ -715,6 +736,30 @@ KVX_API kvx_status_t kvx_launch_write_kv_prefill_bf16(
       cache, write, tokens_per_seq, stream, KVX_DTYPE_BF16);
 }
 
+KVX_API kvx_status_t kvx_launch_write_kv_prefill(
+    const kvx_cache_desc_t *cache, const kvx_write_desc_t *write,
+    int32_t tokens_per_seq, void *stream) {
+  if (cache == NULL || write == NULL) {
+    return KVX_STATUS_INVALID_ARGUMENT;
+  }
+  if (cache->k.dtype != cache->v.dtype) {
+    return KVX_STATUS_INVALID_ARGUMENT;
+  }
+  switch (cache->k.dtype) {
+    case KVX_DTYPE_F16:
+      return kvx_launch_write_kv_prefill_f16(cache, write, tokens_per_seq,
+                                             stream);
+    case KVX_DTYPE_BF16:
+      return kvx_launch_write_kv_prefill_bf16(cache, write, tokens_per_seq,
+                                              stream);
+    case KVX_DTYPE_F32:
+      return kvx_launch_write_kv_prefill_f32(cache, write, tokens_per_seq,
+                                             stream);
+    default:
+      return KVX_STATUS_UNSUPPORTED;
+  }
+}
+
 template <typename T>
 static kvx_status_t kvx_launch_gather_kv_t(const kvx_cache_desc_t *cache,
                                            const kvx_gather_desc_t *gather,
@@ -841,4 +886,25 @@ KVX_API kvx_status_t kvx_launch_gather_kv_bf16(const kvx_cache_desc_t *cache,
                                                void *stream) {
   return kvx_launch_gather_kv_t<__nv_bfloat16>(cache, gather, stream,
                                                KVX_DTYPE_BF16);
+}
+
+KVX_API kvx_status_t kvx_launch_gather_kv(const kvx_cache_desc_t *cache,
+                                          const kvx_gather_desc_t *gather,
+                                          void *stream) {
+  if (cache == NULL || gather == NULL) {
+    return KVX_STATUS_INVALID_ARGUMENT;
+  }
+  if (cache->k.dtype != cache->v.dtype) {
+    return KVX_STATUS_INVALID_ARGUMENT;
+  }
+  switch (cache->k.dtype) {
+    case KVX_DTYPE_F16:
+      return kvx_launch_gather_kv_f16(cache, gather, stream);
+    case KVX_DTYPE_BF16:
+      return kvx_launch_gather_kv_bf16(cache, gather, stream);
+    case KVX_DTYPE_F32:
+      return kvx_launch_gather_kv_f32(cache, gather, stream);
+    default:
+      return KVX_STATUS_UNSUPPORTED;
+  }
 }
