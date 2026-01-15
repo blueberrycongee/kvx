@@ -238,7 +238,16 @@ shape `[num_tokens, num_kv_heads, head_dim]` and strides
 | `max_seq_len` | `uint32_t` | Yes | Max gather length per sequence |
 
 ## 7. API Semantics
-See `kvx_abi.h` for the v1 ABI. Key expectations:
+See `kvx_abi.h` for the v1 ABI. For direct kernel integrations, use the
+preferred entry points in `kernels/kvx_paged_kv.h`:
+- `kvx_launch_write_kv`
+- `kvx_launch_write_kv_prefill`
+- `kvx_launch_gather_kv`
+These functions dispatch on the cache dtype and return
+`KVX_STATUS_UNSUPPORTED` for unsupported dtypes. The per-dtype helpers
+(`*_f16`, `*_bf16`, `*_f32`) remain available but are considered internal.
+
+Key expectations:
 - `kvx_get_version` MUST return `KVX_STATUS_OK` and fill `kvx_version_t`.
 - `kvx_validate_cache_desc` MUST validate layout, dtype, shape, stride, and
   required fields, returning `KVX_STATUS_INVALID_ARGUMENT` on failure.

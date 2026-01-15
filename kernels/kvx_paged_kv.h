@@ -7,6 +7,19 @@
 extern "C" {
 #endif
 
+// Preferred entry points for engine integrations.
+KVX_API kvx_status_t kvx_launch_write_kv(const kvx_cache_desc_t *cache,
+                                         const kvx_write_desc_t *write,
+                                         void *stream);
+
+KVX_API kvx_status_t kvx_launch_write_kv_prefill(
+    const kvx_cache_desc_t *cache, const kvx_write_desc_t *write,
+    int32_t tokens_per_seq, void *stream);
+
+KVX_API kvx_status_t kvx_launch_gather_kv(const kvx_cache_desc_t *cache,
+                                          const kvx_gather_desc_t *gather,
+                                          void *stream);
+
 KVX_API kvx_status_t kvx_launch_write_kv_f32(const kvx_cache_desc_t *cache,
                                              const kvx_write_desc_t *write,
                                              void *stream);

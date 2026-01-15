@@ -19,3 +19,10 @@ Input/output assumptions:
 
 These are skeletons meant to be optimized and extended; they prioritize clear
 indexing and layout handling over performance.
+
+Preferred entry points for integrations:
+- `kvx_launch_write_kv`
+- `kvx_launch_write_kv_prefill`
+- `kvx_launch_gather_kv`
+
+The per-dtype functions remain available but are considered internal helpers.
