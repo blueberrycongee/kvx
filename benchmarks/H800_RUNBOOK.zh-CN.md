@@ -1,11 +1,10 @@
-# H800 Fair Bench Runbook (Linux)
+# H800 公平基准运行手册（Linux）
 
-English | [中文](H800_RUNBOOK.zh-CN.md)
+中文 | [English](H800_RUNBOOK.md)
 
-This runbook prepares a minimal H800 run of the KVX vs vLLM kernel-level
-fair benchmark. It keeps steps short for rental instances.
+本手册用于在 H800 上以最少步骤跑通 KVX vs vLLM 内核级公平基准。
 
-## Quick start (copy/paste)
+## 快速开始（直接复制）
 
 ```bash
 python -m venv .venv
@@ -31,7 +30,7 @@ python benchmarks/fair_bench.py \
   --output-csv benchmarks/results/fair_bench_h800_f16.csv
 ```
 
-## Optional: additional dtypes
+## 可选：其他 dtype
 
 ```bash
 python benchmarks/fair_bench.py \
@@ -45,9 +44,9 @@ python benchmarks/fair_bench.py \
   --output-csv benchmarks/results/fair_bench_h800_bf16.csv
 ```
 
-## Optional: E2E A/B (baseline vs KVX)
+## 可选：端到端 A/B（基线 vs KVX）
 
-This requires vLLM built with the KVX patch (see `patches/vllm/README.md`).
+需要先按 `patches/vllm/README.md` 构建带 KVX 的 vLLM。
 
 ```bash
 MODEL=Qwen/Qwen2-7B-Instruct
@@ -62,7 +61,6 @@ VLLM_USE_KVX_CACHE_WRITE=1 python benchmarks/e2e_bench.py \
   --output-json benchmarks/results/e2e_h800_kvx.json
 ```
 
-## Notes
-- If `vllm` is gated by your environment, install it from a wheel or
-  a local build. The fair benchmark will fail without `vllm`.
-- Use `HF_TOKEN` if your chosen model is gated.
+## 备注
+- 若环境不允许安装 `vllm`，请改用本地构建或轮子包；公平基准依赖 `vllm`。
+- 如模型受限，请配置 `HF_TOKEN`。
