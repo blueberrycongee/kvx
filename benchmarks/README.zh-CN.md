@@ -69,7 +69,7 @@ A100（Autodl、裸机或云端）请用：
 ## H800 / Linux 运行手册
 
 最简 H800 流程请用：
-`benchmarks/H800_RUNBOOK.md`。
+`benchmarks/H800_RUNBOOK.zh-CN.md`。
 
 ## 端到端（vLLM 基线）
 
