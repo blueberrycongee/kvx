@@ -22,10 +22,10 @@ kernels plus reproducible benchmarks for vLLM-style paged attention.
 
 ## Integration (vLLM)
 This repo does not vendor vLLM. To integrate KVX with vLLM, apply the KVX
-patch to a local vLLM checkout and build with `VLLM_ENABLE_KVX=ON`. Runtime
-selection is controlled via an environment flag (e.g.,
-`VLLM_USE_KVX_CACHE_WRITE=1`). Patch and release notes will be provided
-separately.
+patch under `patches/vllm/` to a local vLLM checkout and build with
+`VLLM_ENABLE_KVX=ON`. Runtime selection is controlled via an environment flag
+(e.g., `VLLM_USE_KVX_CACHE_WRITE=1`). See `patches/vllm/README.md` for the
+patch workflow.
 
 ## E2E Benchmark (WSL RTX 3060 Laptop)
 Reference runs compare vLLM baseline vs KVX cache write under identical
