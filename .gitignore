@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Build artifacts
+*.obj
+*.o
+*.a
+*.lib
+*.exp
+*.exe
+*.dll
+*.so
+*.dylib
+*.whl
+*.log
+
+# Bench/test binaries
+benchmarks/kvx_bench
+benchmarks/kvx_bench.exe
+benchmarks/kvx_bench.lib
+benchmarks/kvx_bench.exp
+benchmarks/kvx_bench_wsl
+tests/kvx_abi_test
+tests/kvx_abi_test.exe
+tests/kvx_kernel_test
+
+# Benchmark outputs (keep README files only)
+benchmarks/results/*.json
+benchmarks/results/*.csv
+benchmarks/results/*_env.txt
+
+# OS
+.DS_Store
+Thumbs.db
