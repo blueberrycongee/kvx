@@ -1,5 +1,7 @@
 # KVX Benchmark Harness
 
+English | [中文](README.zh-CN.md)
+
 This harness measures decode-time write/gather throughput for KVX baseline
 CUDA kernels on a single GPU.
 
