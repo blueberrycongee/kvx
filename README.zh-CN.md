@@ -21,9 +21,9 @@ KVX 是面向 LLM 推理的 GPU 优先 KV 缓存标准与内核库。项目定�
 - `tests/`：ABI 与内核正确性测试。
 
 ## 集成（vLLM）
-本仓库不内置 vLLM。要将 KVX 集成到 vLLM，请在本地 vLLM 仓库应用 KVX
-补丁并以 `VLLM_ENABLE_KVX=ON` 编译。运行时通过环境变量切换（如
-`VLLM_USE_KVX_CACHE_WRITE=1`）。补丁与发布说明会单独提供。
+本仓库不内置 vLLM。要将 KVX 集成到 vLLM，请应用 `patches/vllm/` 下的补丁，
+并以 `VLLM_ENABLE_KVX=ON` 编译。运行时通过环境变量切换（如
+`VLLM_USE_KVX_CACHE_WRITE=1`）。补丁流程见 `patches/vllm/README.md`。
 
 ## E2E 基准（WSL RTX 3060 Laptop）
 参考运行在相同设置下对比 vLLM 基线与 KVX cache 写入。为降低波动，我们做了

@@ -1,0 +1,584 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ec67ee8c3..472e550d0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -19,6 +19,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+ 
+ # CUDA by default, can be overridden by using -DVLLM_TARGET_DEVICE=... (used by setup.py)
+ set(VLLM_TARGET_DEVICE "cuda" CACHE STRING "Target device backend for vLLM")
++option(VLLM_ENABLE_KVX "Enable KVX cache write integration" OFF)
++set(VLLM_KVX_ROOT "${CMAKE_CURRENT_LIST_DIR}/../kvx" CACHE PATH "KVX root directory")
+ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+ message(STATUS "Target device: ${VLLM_TARGET_DEVICE}")
+ 
+@@ -144,6 +146,23 @@ else()
+   message(FATAL_ERROR "Can't find CUDA or HIP installation.")
+ endif()
+ 
++set(VLLM_KVX_KERNEL_SRC "")
++set(VLLM_KVX_INCLUDE_DIRS "")
++if(VLLM_ENABLE_KVX)
++  if(NOT VLLM_GPU_LANG STREQUAL "CUDA")
++    message(FATAL_ERROR "VLLM_ENABLE_KVX requires CUDA backend.")
++  endif()
++  get_filename_component(VLLM_KVX_ROOT "${VLLM_KVX_ROOT}" ABSOLUTE)
++  set(VLLM_KVX_KERNEL_SRC "${VLLM_KVX_ROOT}/kernels/kvx_paged_kv.cu")
++  if(NOT EXISTS "${VLLM_KVX_KERNEL_SRC}")
++    message(FATAL_ERROR
++      "VLLM_ENABLE_KVX set but KVX kernel not found at ${VLLM_KVX_KERNEL_SRC}")
++  endif()
++  set(VLLM_KVX_INCLUDE_DIRS
++    "${VLLM_KVX_ROOT}"
++    "${VLLM_KVX_ROOT}/kernels")
++endif()
++
+ 
+ if(VLLM_GPU_LANG STREQUAL "CUDA")
+   #
+@@ -304,6 +323,10 @@ set(VLLM_EXT_SRC
+   "csrc/custom_all_reduce.cu"
+   "csrc/torch_bindings.cpp")
+ 
++if(VLLM_ENABLE_KVX)
++  list(APPEND VLLM_EXT_SRC "${VLLM_KVX_KERNEL_SRC}")
++endif()
++
+ if(VLLM_GPU_LANG STREQUAL "CUDA")
+   SET(CUTLASS_ENABLE_HEADERS_ONLY ON CACHE BOOL "Enable only the header library")
+ 
+@@ -932,6 +955,7 @@ define_extension_target(
+   ARCHITECTURES ${VLLM_GPU_ARCHES}
+   INCLUDE_DIRECTORIES ${CUTLASS_INCLUDE_DIR}
+   INCLUDE_DIRECTORIES ${CUTLASS_TOOLS_UTIL_INCLUDE_DIR}
++  INCLUDE_DIRECTORIES ${VLLM_KVX_INCLUDE_DIRS}
+   USE_SABI 3
+   WITH_SOABI)
+ 
+@@ -940,6 +964,9 @@ define_extension_target(
+ # driver API. This causes problems when linking with earlier versions of CUDA.
+ # Setting this variable sidesteps the issue by calling the driver directly.
+ target_compile_definitions(_C PRIVATE CUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1)
++if(VLLM_ENABLE_KVX)
++  target_compile_definitions(_C PRIVATE VLLM_ENABLE_KVX=1)
++endif()
+ 
+ #
+ # _moe_C extension
+diff --git a/csrc/cache.h b/csrc/cache.h
+index d14f46c34..7110e8369 100644
+--- a/csrc/cache.h
++++ b/csrc/cache.h
+@@ -22,6 +22,14 @@ void reshape_and_cache_flash(torch::Tensor& key, torch::Tensor& value,
+                              const std::string& kv_cache_dtype,
+                              torch::Tensor& k_scale, torch::Tensor& v_scale);
+ 
++void reshape_and_cache_flash_kvx(torch::Tensor& key, torch::Tensor& value,
++                                 torch::Tensor& key_cache,
++                                 torch::Tensor& value_cache,
++                                 torch::Tensor& slot_mapping,
++                                 const std::string& kv_cache_dtype,
++                                 torch::Tensor& k_scale,
++                                 torch::Tensor& v_scale);
++
+ void concat_and_cache_mla(torch::Tensor& kv_c, torch::Tensor& k_pe,
+                           torch::Tensor& kv_cache, torch::Tensor& slot_mapping,
+                           const std::string& kv_cache_dtype,
+diff --git a/csrc/cache_kernels.cu b/csrc/cache_kernels.cu
+index a02fcb617..1af03f006 100644
+--- a/csrc/cache_kernels.cu
++++ b/csrc/cache_kernels.cu
+@@ -9,6 +9,10 @@
+ #include "dispatch_utils.h"
+ #include "quantization/vectorization_utils.cuh"
+ 
++#ifdef VLLM_ENABLE_KVX
++  #include "kvx_paged_kv.h"
++#endif
++
+ #ifdef USE_ROCM
+   #include "quantization/w8a8/fp8/amd/quant_utils.cuh"
+ #else
+@@ -650,6 +654,192 @@ void reshape_and_cache_flash(
+                              CALL_RESHAPE_AND_CACHE_FLASH);
+ }
+ 
++#ifdef VLLM_ENABLE_KVX
++namespace {
++
++kvx_dtype_t kvx_dtype_from_scalar(at::ScalarType dtype) {
++  switch (dtype) {
++    case at::ScalarType::Float:
++      return KVX_DTYPE_F32;
++    case at::ScalarType::Half:
++      return KVX_DTYPE_F16;
++    case at::ScalarType::BFloat16:
++      return KVX_DTYPE_BF16;
++    default:
++      return KVX_DTYPE_INVALID;
++  }
++}
++
++kvx_dtype_t kvx_dtype_from_slots(at::ScalarType dtype) {
++  switch (dtype) {
++    case at::ScalarType::Int:
++      return KVX_DTYPE_S32;
++    case at::ScalarType::Long:
++      return KVX_DTYPE_S64;
++    default:
++      return KVX_DTYPE_INVALID;
++  }
++}
++
++kvx_layout_t kvx_layout_from_stride(int64_t head_stride, int64_t head_size) {
++  return (head_stride == head_size) ? KVX_LAYOUT_BLOCK_NHD
++                                    : KVX_LAYOUT_BLOCK_HND;
++}
++
++void kvx_fill_tensor_desc(kvx_tensor_desc_t* desc, const torch::Tensor& tensor,
++                          kvx_dtype_t dtype, kvx_layout_t layout) {
++  desc->size = sizeof(kvx_tensor_desc_t);
++  desc->dtype = dtype;
++  desc->layout = layout;
++  desc->memory = KVX_MEMORY_DEVICE;
++  desc->ndim = static_cast<uint32_t>(tensor.dim());
++  for (int i = 0; i < KVX_MAX_TENSOR_DIMS; ++i) {
++    desc->shape[i] = 0;
++    desc->stride[i] = 0;
++  }
++  for (int i = 0; i < tensor.dim() && i < KVX_MAX_TENSOR_DIMS; ++i) {
++    desc->shape[i] = tensor.size(i);
++    desc->stride[i] = tensor.stride(i);
++  }
++  desc->data = tensor.data_ptr();
++}
++
++void kvx_fill_io_desc(kvx_tensor_desc_t* desc, const torch::Tensor& tensor,
++                      kvx_dtype_t dtype) {
++  desc->size = sizeof(kvx_tensor_desc_t);
++  desc->dtype = dtype;
++  desc->layout = KVX_LAYOUT_INVALID;
++  desc->memory = KVX_MEMORY_DEVICE;
++  desc->ndim = static_cast<uint32_t>(tensor.dim());
++  for (int i = 0; i < KVX_MAX_TENSOR_DIMS; ++i) {
++    desc->shape[i] = 0;
++    desc->stride[i] = 0;
++  }
++  for (int i = 0; i < tensor.dim() && i < KVX_MAX_TENSOR_DIMS; ++i) {
++    desc->shape[i] = tensor.size(i);
++    desc->stride[i] = tensor.stride(i);
++  }
++  desc->data = tensor.data_ptr();
++}
++
++}  // namespace
++#endif  // VLLM_ENABLE_KVX
++
++void reshape_and_cache_flash_kvx(
++    torch::Tensor& key,        // [num_tokens, num_heads, head_size]
++    torch::Tensor& value,      // [num_tokens, num_heads, head_size]
++    torch::Tensor& key_cache,  // [num_blocks, block_size, num_heads, head_size]
++    torch::Tensor&
++        value_cache,  // [num_blocks, block_size, num_heads, head_size]
++    torch::Tensor& slot_mapping,  // [num_tokens] or [num_actual_tokens]
++    const std::string& kv_cache_dtype, torch::Tensor& k_scale,
++    torch::Tensor& v_scale) {
++#ifdef VLLM_ENABLE_KVX
++  TORCH_CHECK(kv_cache_dtype == "auto",
++              "KVX cache write only supports kv_cache_dtype=auto");
++  TORCH_CHECK(key.is_cuda() && value.is_cuda(),
++              "key/value must be CUDA tensors");
++  TORCH_CHECK(key_cache.is_cuda() && value_cache.is_cuda(),
++              "cache tensors must be CUDA tensors");
++  TORCH_CHECK(key.scalar_type() == value.scalar_type(),
++              "key/value dtype mismatch");
++  TORCH_CHECK(key_cache.scalar_type() == value_cache.scalar_type(),
++              "cache dtype mismatch");
++  TORCH_CHECK(key.dim() == 3 && value.dim() == 3,
++              "key/value must be [num_tokens, num_heads, head_dim]");
++
++  kvx_dtype_t kvx_dtype = kvx_dtype_from_scalar(key.scalar_type());
++  TORCH_CHECK(kvx_dtype != KVX_DTYPE_INVALID,
++              "KVX cache write unsupported dtype");
++  TORCH_CHECK(key_cache.scalar_type() == key.scalar_type(),
++              "key/value dtype must match cache dtype");
++
++  kvx_dtype_t slot_dtype = kvx_dtype_from_slots(slot_mapping.scalar_type());
++  TORCH_CHECK(slot_dtype != KVX_DTYPE_INVALID,
++              "slot_mapping must be int32 or int64");
++  TORCH_CHECK(slot_mapping.dim() == 1, "slot_mapping must be 1D");
++
++  int64_t num_tokens = slot_mapping.size(0);
++  int64_t num_heads = key.size(1);
++  int64_t head_dim = key.size(2);
++  int64_t key_stride = key.stride(0);
++  int64_t value_stride = value.stride(0);
++  TORCH_CHECK(key.stride(2) == 1 && key.stride(1) == head_dim &&
++                  key_stride == num_heads * head_dim,
++              "key must be contiguous [token, head, dim]");
++  TORCH_CHECK(value.stride(2) == 1 && value.stride(1) == head_dim &&
++                  value_stride == num_heads * head_dim,
++              "value must be contiguous [token, head, dim]");
++
++  int64_t head_stride = key_cache.stride(2);
++  kvx_layout_t layout = kvx_layout_from_stride(head_stride, head_dim);
++  int64_t block_size =
++      (layout == KVX_LAYOUT_BLOCK_NHD) ? key_cache.size(1) : key_cache.size(2);
++  int64_t cache_num_heads =
++      (layout == KVX_LAYOUT_BLOCK_NHD) ? key_cache.size(2) : key_cache.size(1);
++  int64_t cache_head_dim = key_cache.size(3);
++  TORCH_CHECK(cache_num_heads == num_heads,
++              "cache num_heads must match key/value");
++  TORCH_CHECK(cache_head_dim == head_dim,
++              "cache head_dim must match key/value");
++  TORCH_CHECK(key_cache.sizes() == value_cache.sizes(),
++              "key/value cache shape mismatch");
++  TORCH_CHECK(key_cache.strides() == value_cache.strides(),
++              "key/value cache stride mismatch");
++
++  kvx_cache_desc_t cache{};
++  cache.size = sizeof(kvx_cache_desc_t);
++  cache.num_blocks = key_cache.size(0);
++  cache.block_size = block_size;
++  cache.num_kv_heads = cache_num_heads;
++  cache.head_dim = cache_head_dim;
++  kvx_fill_tensor_desc(&cache.k, key_cache, kvx_dtype, layout);
++  kvx_fill_tensor_desc(&cache.v, value_cache, kvx_dtype, layout);
++
++  kvx_write_desc_t write{};
++  write.size = sizeof(kvx_write_desc_t);
++  write.io.size = sizeof(kvx_kv_io_desc_t);
++  write.io.num_tokens = num_tokens;
++  write.io.num_kv_heads = num_heads;
++  write.io.head_dim = head_dim;
++  kvx_fill_io_desc(&write.io.key, key, kvx_dtype);
++  kvx_fill_io_desc(&write.io.value, value, kvx_dtype);
++
++  write.slots.size = sizeof(kvx_slot_mapping_t);
++  write.slots.dtype = slot_dtype;
++  write.slots.token_count = num_tokens;
++  write.slots.invalid_slot = -1;
++  write.slots.slots = slot_mapping.data_ptr();
++
++  write.k_scale = k_scale.defined() ? k_scale.data_ptr() : nullptr;
++  write.v_scale = v_scale.defined() ? v_scale.data_ptr() : nullptr;
++  write.k_scale_desc.size = sizeof(kvx_scale_desc_t);
++  write.v_scale_desc.size = sizeof(kvx_scale_desc_t);
++
++  auto cuda_stream = at::cuda::getCurrentCUDAStream();
++  void* stream = reinterpret_cast<void*>(cuda_stream.stream());
++  kvx_status_t status = KVX_STATUS_INVALID_ARGUMENT;
++  switch (key.scalar_type()) {
++    case at::ScalarType::Half:
++      status = kvx_launch_write_kv_f16(&cache, &write, stream);
++      break;
++    case at::ScalarType::BFloat16:
++      status = kvx_launch_write_kv_bf16(&cache, &write, stream);
++      break;
++    case at::ScalarType::Float:
++      status = kvx_launch_write_kv_f32(&cache, &write, stream);
++      break;
++    default:
++      status = KVX_STATUS_UNSUPPORTED;
++      break;
++  }
++  TORCH_CHECK(status == KVX_STATUS_OK,
++              "kvx cache write failed with status=", static_cast<int>(status));
++#else
++  TORCH_CHECK(false, "KVX cache write not enabled in this build");
++#endif
++}
++
+ // KV_T is the data type of key and value tensors.
+ // CACHE_T is the stored data type of kv-cache.
+ // KV_DTYPE is the real data type of kv-cache.
+diff --git a/csrc/torch_bindings.cpp b/csrc/torch_bindings.cpp
+index 864be7a26..b25c0ba55 100644
+--- a/csrc/torch_bindings.cpp
++++ b/csrc/torch_bindings.cpp
+@@ -728,6 +728,18 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cache_ops), cache_ops) {
+   cache_ops.impl("reshape_and_cache_flash", torch::kCUDA,
+                  &reshape_and_cache_flash);
+ 
++#ifdef VLLM_ENABLE_KVX
++  cache_ops.def(
++      "reshape_and_cache_flash_kvx(Tensor key, Tensor value,"
++      "                            Tensor! key_cache,"
++      "                            Tensor! value_cache,"
++      "                            Tensor slot_mapping,"
++      "                            str kv_cache_dtype,"
++      "                            Tensor k_scale, Tensor v_scale) -> ()");
++  cache_ops.impl("reshape_and_cache_flash_kvx", torch::kCUDA,
++                 &reshape_and_cache_flash_kvx);
++#endif
++
+   // Concat kv_c and k_pe and cache them.
+   cache_ops.def(
+       "concat_and_cache_mla(Tensor kv_c, Tensor k_pe,"
+diff --git a/tests/kernels/attention/test_cache.py b/tests/kernels/attention/test_cache.py
+index 367a986ab..00eff9f65 100644
+--- a/tests/kernels/attention/test_cache.py
++++ b/tests/kernels/attention/test_cache.py
+@@ -1,11 +1,13 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
++import os
+ import random
+ 
+ import pytest
+ import torch
+ 
++import vllm.envs as envs
+ from tests.kernels.utils import DEFAULT_OPCHECK_TEST_UTILS, opcheck
+ from vllm import _custom_ops as ops
+ from vllm.platforms import current_platform
+@@ -39,6 +41,178 @@ CUDA_DEVICES = [f"cuda:{i}" for i in range(1 if torch.cuda.device_count() == 1 e
+ KV_CACHE_DTYPE = ["auto", "fp8"]
+ 
+ RESHAPE_FLASH_IMPLEMENTATIONS = ["cuda", "triton"]
++KVX_TEST_DTYPES = [torch.float16, torch.float32]
++
++
++@pytest.mark.parametrize("dtype", KVX_TEST_DTYPES)
++@pytest.mark.parametrize("device", CUDA_DEVICES)
++@torch.inference_mode()
++def test_reshape_and_cache_flash_kvx(
++    kv_cache_factory_flashinfer,
++    dtype: torch.dtype,
++    device: str,
++) -> None:
++    if not torch.cuda.is_available():
++        pytest.skip("CUDA required for kvx cache write test.")
++    if not hasattr(torch.ops, "_C_cache_ops") or not hasattr(
++        torch.ops._C_cache_ops, "reshape_and_cache_flash_kvx"
++    ):
++        pytest.skip("KVX cache write op not built.")
++
++    num_tokens = 8
++    num_heads = 4
++    head_size = 64
++    block_size = 16
++    num_blocks = 16
++    kv_cache_dtype = "auto"
++    kv_cache_layout = "NHD"
++
++    torch.set_default_device(device)
++    torch.cuda.set_device(device)
++
++    slot_mapping = torch.arange(num_tokens, dtype=torch.long, device=device)
++    qkv = torch.randn(num_tokens, 3, num_heads, head_size, dtype=dtype, device=device)
++    _, key, value = qkv.unbind(dim=1)
++
++    key_caches, value_caches = kv_cache_factory_flashinfer(
++        num_blocks,
++        block_size,
++        1,
++        num_heads,
++        head_size,
++        kv_cache_dtype,
++        dtype,
++        device=device,
++        cache_layout=kv_cache_layout,
++    )
++    key_cache_ref, value_cache_ref = key_caches[0], value_caches[0]
++    key_cache_kvx = key_cache_ref.clone()
++    value_cache_kvx = value_cache_ref.clone()
++
++    k_scale = (key.amax() / 64.0).to(torch.float32)
++    v_scale = (value.amax() / 64.0).to(torch.float32)
++
++    torch.ops._C_cache_ops.reshape_and_cache_flash(
++        key,
++        value,
++        key_cache_ref,
++        value_cache_ref,
++        slot_mapping,
++        kv_cache_dtype,
++        k_scale,
++        v_scale,
++    )
++    torch.ops._C_cache_ops.reshape_and_cache_flash_kvx(
++        key,
++        value,
++        key_cache_kvx,
++        value_cache_kvx,
++        slot_mapping,
++        kv_cache_dtype,
++        k_scale,
++        v_scale,
++    )
++
++    torch.testing.assert_close(key_cache_kvx, key_cache_ref)
++    torch.testing.assert_close(value_cache_kvx, value_cache_ref)
++
++
++@pytest.mark.parametrize("use_kvx", [False, True])
++@pytest.mark.parametrize("device", CUDA_DEVICES)
++@torch.inference_mode()
++def test_reshape_and_cache_flash_accepts_non_contiguous(
++    kv_cache_factory_flashinfer,
++    use_kvx: bool,
++    device: str,
++) -> None:
++    if not torch.cuda.is_available():
++        pytest.skip("CUDA required for reshape_and_cache_flash test.")
++    if use_kvx and (
++        not hasattr(torch.ops, "_C_cache_ops")
++        or not hasattr(torch.ops._C_cache_ops, "reshape_and_cache_flash_kvx")
++    ):
++        pytest.skip("KVX cache write op not built.")
++
++    prev_kvx = os.environ.get("VLLM_USE_KVX_CACHE_WRITE")
++    envs.disable_envs_cache()
++    try:
++        if use_kvx:
++            os.environ["VLLM_USE_KVX_CACHE_WRITE"] = "1"
++        else:
++            os.environ["VLLM_USE_KVX_CACHE_WRITE"] = "0"
++
++        num_tokens = 8
++        num_heads = 4
++        head_size = 64
++        block_size = 16
++        num_blocks = 16
++        kv_cache_dtype = "auto"
++        kv_cache_layout = "NHD"
++        dtype = torch.float16
++
++        torch.set_default_device(device)
++        torch.cuda.set_device(device)
++
++        slot_mapping = torch.arange(num_tokens, dtype=torch.long, device=device)
++        qkv = torch.randn(
++            num_tokens, 3, num_heads, head_size, dtype=dtype, device=device
++        )
++        _, key, value = qkv.unbind(dim=1)
++        key_nc = key.transpose(0, 1).contiguous().transpose(0, 1)
++        value_nc = value.transpose(0, 1).contiguous().transpose(0, 1)
++        assert not key_nc.is_contiguous()
++        assert not value_nc.is_contiguous()
++
++        key_caches, value_caches = kv_cache_factory_flashinfer(
++            num_blocks,
++            block_size,
++            1,
++            num_heads,
++            head_size,
++            kv_cache_dtype,
++            dtype,
++            device=device,
++            cache_layout=kv_cache_layout,
++        )
++        key_cache, value_cache = key_caches[0], value_caches[0]
++
++        k_scale = (key.amax() / 64.0).to(torch.float32)
++        v_scale = (value.amax() / 64.0).to(torch.float32)
++
++        key_cache_ref = key_cache.clone()
++        value_cache_ref = value_cache.clone()
++        key_cache_nc = key_cache.clone()
++        value_cache_nc = value_cache.clone()
++
++        ops.reshape_and_cache_flash(
++            key,
++            value,
++            key_cache_ref,
++            value_cache_ref,
++            slot_mapping,
++            kv_cache_dtype,
++            k_scale,
++            v_scale,
++        )
++        ops.reshape_and_cache_flash(
++            key_nc,
++            value_nc,
++            key_cache_nc,
++            value_cache_nc,
++            slot_mapping,
++            kv_cache_dtype,
++            k_scale,
++            v_scale,
++        )
++
++        torch.testing.assert_close(key_cache_nc, key_cache_ref)
++        torch.testing.assert_close(value_cache_nc, value_cache_ref)
++    finally:
++        if prev_kvx is None:
++            os.environ.pop("VLLM_USE_KVX_CACHE_WRITE", None)
++        else:
++            os.environ["VLLM_USE_KVX_CACHE_WRITE"] = prev_kvx
++        envs.disable_envs_cache()
+ 
+ 
+ @pytest.mark.parametrize("num_tokens", NUM_TOKENS)
+diff --git a/vllm/_custom_ops.py b/vllm/_custom_ops.py
+index 86d6e309b..6150d6ffc 100644
+--- a/vllm/_custom_ops.py
++++ b/vllm/_custom_ops.py
+@@ -14,6 +14,11 @@ logger = init_logger(__name__)
+ 
+ current_platform.import_kernels()
+ 
++_KVX_CACHE_WRITE_AVAILABLE = hasattr(torch.ops, "_C_cache_ops") and hasattr(
++    torch.ops._C_cache_ops, "reshape_and_cache_flash_kvx"
++)
++_KVX_CACHE_WRITE_WARNED = False
++
+ if TYPE_CHECKING:
+ 
+     def register_fake(fn):
+@@ -2393,6 +2398,31 @@ def reshape_and_cache_flash(
+     k_scale: torch.Tensor,
+     v_scale: torch.Tensor,
+ ) -> None:
++    global _KVX_CACHE_WRITE_WARNED
++    if not key.is_contiguous():
++        key = key.contiguous()
++    if not value.is_contiguous():
++        value = value.contiguous()
++    if envs.VLLM_USE_KVX_CACHE_WRITE and kv_cache_dtype == "auto":
++        if _KVX_CACHE_WRITE_AVAILABLE:
++            torch.ops._C_cache_ops.reshape_and_cache_flash_kvx(
++                key,
++                value,
++                key_cache,
++                value_cache,
++                slot_mapping,
++                kv_cache_dtype,
++                k_scale,
++                v_scale,
++            )
++            return
++        if not _KVX_CACHE_WRITE_WARNED:
++            logger.warning(
++                "KVX cache write requested but reshape_and_cache_flash_kvx "
++                "op is unavailable; falling back to default kernel."
++            )
++            _KVX_CACHE_WRITE_WARNED = True
++
+     torch.ops._C_cache_ops.reshape_and_cache_flash(
+         key,
+         value,
+diff --git a/vllm/envs.py b/vllm/envs.py
+index d77c1e9d9..dc52a6c36 100755
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -110,6 +110,7 @@ if TYPE_CHECKING:
+     VLLM_ALLOW_RUNTIME_LORA_UPDATING: bool = False
+     VLLM_SKIP_P2P_CHECK: bool = False
+     VLLM_DISABLED_KERNELS: list[str] = []
++    VLLM_USE_KVX_CACHE_WRITE: bool = False
+     VLLM_DISABLE_PYNCCL: bool = False
+     VLLM_ROCM_USE_AITER: bool = False
+     VLLM_ROCM_USE_AITER_PAGED_ATTN: bool = False
+@@ -936,6 +937,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     "VLLM_DISABLED_KERNELS": lambda: []
+     if "VLLM_DISABLED_KERNELS" not in os.environ
+     else os.environ["VLLM_DISABLED_KERNELS"].split(","),
++    # Enable KVX cache write kernel for reshape_and_cache_flash (CUDA-only).
++    "VLLM_USE_KVX_CACHE_WRITE": lambda: (
++        os.environ.get("VLLM_USE_KVX_CACHE_WRITE", "0").strip().lower() in ("1", "true")
++    ),
+     # Disable pynccl (using torch.distributed instead)
+     "VLLM_DISABLE_PYNCCL": lambda: (
+         os.getenv("VLLM_DISABLE_PYNCCL", "False").lower() in ("true", "1")
