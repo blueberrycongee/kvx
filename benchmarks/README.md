@@ -52,6 +52,15 @@ The script writes a CSV summary to:
 
 See `benchmarks/results/README.md` for a summary of the most recent run.
 
+## Environment capture
+
+Use the shared capture script to record GPU/driver/CUDA/torch/vLLM metadata:
+
+```bash
+python benchmarks/capture_env.py \
+  --output benchmarks/results/fair_bench_wsl_env.json
+```
+
 ## A100 / Linux runbook
 
 For an A100 Linux run (Autodl, bare metal, or cloud), use:

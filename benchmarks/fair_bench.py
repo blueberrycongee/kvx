@@ -7,9 +7,6 @@ import time
 from pathlib import Path
 
 import torch
-from vllm import _custom_ops as ops
-from vllm.model_executor import set_random_seed
-from vllm.utils import create_kv_caches_with_random_flash
 
 
 DTYPE_MAP = {
@@ -39,6 +36,13 @@ def build_kvx_like_slot_mapping(seq_count, seq_len, block_size,
 def run_vllm_once(seq_count, num_tokens, num_heads, head_dim, block_size,
                   num_blocks, seq_len, tokens_per_seq, dtype, kv_cache_dtype,
                   iters, warmup, device="cuda"):
+    try:
+        from vllm import _custom_ops as ops
+        from vllm.model_executor import set_random_seed
+        from vllm.utils import create_kv_caches_with_random_flash
+    except Exception as exc:
+        raise RuntimeError("vllm is required for fair_bench vLLM runs") from exc
+
     if kv_cache_dtype == "fp8" and head_dim % 16:
         raise ValueError("fp8 kv-cache requires head_dim to be a multiple of 16")
 
