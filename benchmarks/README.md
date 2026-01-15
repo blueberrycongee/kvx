@@ -66,6 +66,11 @@ python benchmarks/capture_env.py \
 For an A100 Linux run (Autodl, bare metal, or cloud), use:
 `benchmarks/A100_RUNBOOK.md`.
 
+## H800 / Linux runbook
+
+For a minimal H800 run, use:
+`benchmarks/H800_RUNBOOK.md`.
+
 ## End-to-end (vLLM baseline)
 
 This script measures end-to-end generation throughput and latency using vLLM.
