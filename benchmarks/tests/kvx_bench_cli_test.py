@@ -38,6 +38,13 @@ def main():
     if seq_count != 2 or seq_len != 8 or block_size != 4 or tokens_per_seq != 2:
         print("kvx_bench_cli_test failed: args not reflected in output")
         return 1
+
+    bad_cmd = [str(bin_path), "--seq-count", "0"]
+    proc = subprocess.run(bad_cmd, text=True, capture_output=True)
+    if proc.returncode == 0:
+        print("kvx_bench_cli_test failed: invalid args did not error")
+        return 1
+
     print("kvx_bench_cli_test passed")
     return 0
 

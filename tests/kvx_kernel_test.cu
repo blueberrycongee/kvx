@@ -74,6 +74,27 @@ static void set_tensor_desc_nhd(kvx_tensor_desc_t *tensor, uint32_t num_blocks,
   tensor->data = data;
 }
 
+static void set_tensor_desc_hnd(kvx_tensor_desc_t *tensor, uint32_t num_blocks,
+                                uint32_t block_size, uint32_t num_heads,
+                                uint32_t head_dim, kvx_dtype_t dtype,
+                                void *data) {
+  memset(tensor, 0, sizeof(*tensor));
+  tensor->size = sizeof(*tensor);
+  tensor->dtype = dtype;
+  tensor->layout = KVX_LAYOUT_BLOCK_HND;
+  tensor->memory = KVX_MEMORY_DEVICE;
+  tensor->ndim = 4;
+  tensor->shape[0] = num_blocks;
+  tensor->shape[1] = num_heads;
+  tensor->shape[2] = block_size;
+  tensor->shape[3] = head_dim;
+  tensor->stride[3] = 1;
+  tensor->stride[2] = head_dim;
+  tensor->stride[1] = (int64_t)block_size * head_dim;
+  tensor->stride[0] = (int64_t)num_heads * block_size * head_dim;
+  tensor->data = data;
+}
+
 static void set_tensor_desc_tokens(kvx_tensor_desc_t *tensor, uint32_t num_tokens,
                                    uint32_t num_heads, uint32_t head_dim,
                                    kvx_dtype_t dtype, void *data,
@@ -288,11 +309,159 @@ static bool run_write_test_case(int32_t num_heads, int32_t head_dim,
 }
 
 template <typename T>
+static bool run_write_test_case_hnd(int32_t num_heads, int32_t head_dim,
+                                    int32_t tokens_per_seq) {
+  const int32_t seq_count = 2;
+  const int32_t seq_len = 4;
+  const int32_t block_size = 4;
+  const int32_t max_blocks_per_seq = (seq_len + block_size - 1) / block_size;
+  const int32_t num_blocks = seq_count * max_blocks_per_seq;
+  const int32_t num_tokens = seq_count * tokens_per_seq;
+  const size_t token_elems = (size_t)num_tokens * num_heads * head_dim;
+  const size_t cache_elems =
+      (size_t)num_blocks * block_size * num_heads * head_dim;
+
+  std::vector<T> h_key(token_elems);
+  std::vector<T> h_value(token_elems);
+  for (size_t i = 0; i < token_elems; ++i) {
+    float val = 0.1f + 0.01f * (float)i;
+    h_key[i] = DTypeTraits<T>::from_float(val);
+    h_value[i] = DTypeTraits<T>::from_float(val + 0.5f);
+  }
+
+  std::vector<int64_t> h_slots(num_tokens, -1);
+  int32_t start_pos = seq_len - tokens_per_seq;
+  for (int32_t s = 0; s < seq_count; ++s) {
+    for (int32_t t = 0; t < tokens_per_seq; ++t) {
+      int32_t token_pos = start_pos + t;
+      int32_t logical_block = token_pos / block_size;
+      int32_t block_offset = token_pos - logical_block * block_size;
+      int32_t block_id = s * max_blocks_per_seq + logical_block;
+      int32_t token_idx = s * tokens_per_seq + t;
+      h_slots[token_idx] =
+          (int64_t)block_id * block_size + (int64_t)block_offset;
+    }
+  }
+
+  T *d_key = nullptr;
+  T *d_value = nullptr;
+  T *d_key_cache = nullptr;
+  T *d_value_cache = nullptr;
+  int64_t *d_slots = nullptr;
+  check_cuda(cudaMalloc(&d_key, token_elems * sizeof(T)), "cudaMalloc key");
+  check_cuda(cudaMalloc(&d_value, token_elems * sizeof(T)), "cudaMalloc value");
+  check_cuda(cudaMalloc(&d_key_cache, cache_elems * sizeof(T)),
+             "cudaMalloc key_cache");
+  check_cuda(cudaMalloc(&d_value_cache, cache_elems * sizeof(T)),
+             "cudaMalloc value_cache");
+  check_cuda(cudaMalloc(&d_slots, num_tokens * sizeof(int64_t)),
+             "cudaMalloc slots");
+
+  check_cuda(cudaMemcpy(d_key, h_key.data(), token_elems * sizeof(T),
+                        cudaMemcpyHostToDevice),
+             "cudaMemcpy key");
+  check_cuda(cudaMemcpy(d_value, h_value.data(), token_elems * sizeof(T),
+                        cudaMemcpyHostToDevice),
+             "cudaMemcpy value");
+  check_cuda(cudaMemcpy(d_slots, h_slots.data(), num_tokens * sizeof(int64_t),
+                        cudaMemcpyHostToDevice),
+             "cudaMemcpy slots");
+
+  kvx_cache_desc_t cache;
+  memset(&cache, 0, sizeof(cache));
+  cache.size = sizeof(cache);
+  cache.num_blocks = num_blocks;
+  cache.block_size = block_size;
+  cache.num_kv_heads = num_heads;
+  cache.head_dim = head_dim;
+  set_tensor_desc_hnd(&cache.k, num_blocks, block_size, num_heads, head_dim,
+                      DTypeTraits<T>::dtype, d_key_cache);
+  set_tensor_desc_hnd(&cache.v, num_blocks, block_size, num_heads, head_dim,
+                      DTypeTraits<T>::dtype, d_value_cache);
+
+  kvx_write_desc_t write;
+  memset(&write, 0, sizeof(write));
+  write.size = sizeof(write);
+  write.io.size = sizeof(write.io);
+  write.io.num_tokens = num_tokens;
+  write.io.num_kv_heads = num_heads;
+  write.io.head_dim = head_dim;
+  set_tensor_desc_tokens(&write.io.key, num_tokens, num_heads, head_dim,
+                         DTypeTraits<T>::dtype, d_key, KVX_MEMORY_DEVICE);
+  set_tensor_desc_tokens(&write.io.value, num_tokens, num_heads, head_dim,
+                         DTypeTraits<T>::dtype, d_value, KVX_MEMORY_DEVICE);
+  write.slots.size = sizeof(write.slots);
+  write.slots.dtype = KVX_DTYPE_S64;
+  write.slots.token_count = num_tokens;
+  write.slots.invalid_slot = -1;
+  write.slots.slots = d_slots;
+
+  kvx_status_t st = launch_write<T>(&cache, &write);
+  if (st != KVX_STATUS_OK) {
+    fprintf(stderr, "write HND failed: %d\n", st);
+    return false;
+  }
+  check_cuda(cudaDeviceSynchronize(), "cudaDeviceSynchronize write HND");
+
+  std::vector<T> h_key_cache(cache_elems);
+  std::vector<T> h_value_cache(cache_elems);
+  check_cuda(cudaMemcpy(h_key_cache.data(), d_key_cache,
+                        cache_elems * sizeof(T), cudaMemcpyDeviceToHost),
+             "cudaMemcpy key_cache");
+  check_cuda(cudaMemcpy(h_value_cache.data(), d_value_cache,
+                        cache_elems * sizeof(T), cudaMemcpyDeviceToHost),
+             "cudaMemcpy value_cache");
+
+  bool ok = true;
+  float tol = DTypeTraits<T>::tol();
+  for (int32_t token = 0; token < num_tokens; ++token) {
+    int64_t slot = h_slots[token];
+    int32_t block_idx = (int32_t)(slot / block_size);
+    int32_t block_offset = (int32_t)(slot - (int64_t)block_idx * block_size);
+    for (int32_t head = 0; head < num_heads; ++head) {
+      for (int32_t dim = 0; dim < head_dim; ++dim) {
+        int64_t idx = (int64_t)token * num_heads * head_dim +
+                      (int64_t)head * head_dim + dim;
+        int64_t offset =
+            (int64_t)block_idx * num_heads * block_size * head_dim +
+            (int64_t)head * block_size * head_dim +
+            (int64_t)block_offset * head_dim + dim;
+        float expected_k = DTypeTraits<T>::to_float(h_key[idx]);
+        float expected_v = DTypeTraits<T>::to_float(h_value[idx]);
+        float actual_k = DTypeTraits<T>::to_float(h_key_cache[offset]);
+        float actual_v = DTypeTraits<T>::to_float(h_value_cache[offset]);
+        if (!nearly_equal(actual_k, expected_k, tol) ||
+            !nearly_equal(actual_v, expected_v, tol)) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) {
+        break;
+      }
+    }
+    if (!ok) {
+      break;
+    }
+  }
+
+  cudaFree(d_key);
+  cudaFree(d_value);
+  cudaFree(d_key_cache);
+  cudaFree(d_value_cache);
+  cudaFree(d_slots);
+  return ok;
+}
+
+template <typename T>
 static bool run_write_test() {
   bool ok = true;
   ok &= run_write_test_case<T>(2, 4, 1);
   ok &= run_write_test_case<T>(1, 7, 1);
   ok &= run_write_test_case<T>(2, 4, 2);
+  // HND layout matches the vLLM flash cache layout when heads are strided.
+  ok &= run_write_test_case_hnd<T>(2, 4, 1);
+  ok &= run_write_test_case_hnd<T>(1, 7, 2);
   return ok;
 }
 
