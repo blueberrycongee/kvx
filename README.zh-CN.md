@@ -17,6 +17,7 @@ KVX 是面向 LLM 推理的 GPU 优先 KV 缓存标准与内核库。项目定�
 - `KV_CACHE_LAYOUTS.md`：vLLM / TRT-LLM / TGI 布局对比。
 - `kvx_abi.h`, `kvx_abi.c`：KVX C ABI 及辅助实现。
 - `kernels/`：CUDA 内核与头文件。
+- `adapters/`：适配器桩与集成契约。
 - `benchmarks/`：基准测试与运行手册。
 - `tests/`：ABI 与内核正确性测试。
 

@@ -17,6 +17,7 @@ kernels plus reproducible benchmarks for vLLM-style paged attention.
 - `KV_CACHE_LAYOUTS.md`: Layout comparison across vLLM / TRT-LLM / TGI.
 - `kvx_abi.h`, `kvx_abi.c`: KVX C ABI and helpers.
 - `kernels/`: CUDA kernels and headers.
+- `adapters/`: Adapter stubs and integration contracts.
 - `benchmarks/`: Benchmark harness and runbooks.
 - `tests/`: ABI and kernel correctness tests.
 
