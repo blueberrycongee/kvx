@@ -310,3 +310,20 @@ Minimum required tests:
 - TensorRT-LLM: `KV_OFFSETS` encodes `KVCacheIndex` with primary/secondary pool
   selection; adapters must carry pool pointers and enforce power-of-two
   `tokensPerBlock`.
+
+## 12. Reference Implementation Status (v1)
+This section documents the current KVX reference implementation behavior.
+It does not change the normative requirements above. See
+`kvx/KVX_CONFORMANCE.md` for the full matrix.
+
+- Layouts: NHD/HND/HND_PACKED are implemented with canonical contiguous strides;
+  `KVX_LAYOUT_BLOCK_CUSTOM` is not implemented.
+- Dtypes: F16/BF16/F32 are supported; FP8 is planned but not implemented.
+- Gather: only PACKED block tables are implemented; RAGGED/KV_OFFSETS are
+  planned.
+- Validation: `kvx_validate_cache_desc` enforces canonical strides; write/gather
+  path validation is partial.
+- IO layout: write expects 3D row-major contiguous; gather expects 4D row-major
+  contiguous.
+- Scales and pools: `kvx_scale_desc_t` and secondary pools are defined in the
+  ABI but not consumed by kernels yet.
